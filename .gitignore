@@ -13,7 +13,5 @@ __pycache__/
 data/*
 !data/.gitkeep
 
-models
-checkpoints
-FouriScale
+*.jpg
 InstantID

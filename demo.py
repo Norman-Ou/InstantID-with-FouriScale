@@ -25,28 +25,21 @@ def resize_and_pad(image_pil, size):
     original_size = image_pil.size
     target_w, target_h = size
     
-    # 计算缩放比例，保持宽高比不变
     aspect_ratio = original_size[0] / original_size[1]
     if (target_w / target_h) > aspect_ratio:
-        # 如果目标宽高比大于原始宽高比，则以高为基准进行缩放
         new_h = target_h
         new_w = int(target_h * aspect_ratio)
     else:
-        # 如果目标宽高比小于或等于原始宽高比，则以宽为基准进行缩放
         new_w = target_w
         new_h = int(target_w / aspect_ratio)
     
-    # 缩放图像
     resized_image = image_pil.resize((new_w, new_h), Image.Resampling.LANCZOS)
     
-    # 创建一个新的空白图像，其尺寸为目标尺寸
     new_image = Image.new("RGB", (target_w, target_h))
     
-    # 计算关键点图像在新图像上的位置
     left = (target_w - new_w) // 2
     top = (target_h - new_h) // 2
     
-    # 将缩放后的图像粘贴到新图像上，使其居中
     new_image.paste(resized_image, (left, top))
     
     return new_image
@@ -56,10 +49,26 @@ def main():
     # args
     pretrained_model_name_or_path = 'wangqixun/YamerMIX_v8'
     weight_dtype = torch.float16
-    pixel_height = 1534
-    pixel_width = 1024
+    target_height = 2048
+    target_width = 2048
+    # set referring image
+    face_img = load_image("./InstantID/examples/kaifu_resize.png")
+    pose_img = load_image("./InstantID/examples/poses/pose.jpg")
+    # set prompt
+    prompt = "film noir style, ink sketch|vector, male man, highly detailed, sharp focus, ultra sharpness, monochrome, high contrast, dramatic shadows, 1940s style, mysterious, cinematic"
+    neg_prompt = "ugly, deformed, noisy, blurry, low contrast, realism, photorealistic, vibrant, colorful"
 
-    # Fouriscale Setting
+    # InstanID args
+    controlnet_conditioning_scale=0.8
+    ip_adapter_scale=0.8
+    # FouriScale args
+    start_step = 12 # 20*(30/50)=12              original start_step in FouriScale config is 20
+    stop_step=21 # # 35*(30/50)=21               original start_step in FouriScale config is 35
+    # Generation args
+    num_inference_steps=30 # lower cost of time. original num_inference_steps in FouriScale config is 50
+    guidance_scale=5.5
+
+    # Load Fouriscale Setting
     layer_settings = read_layer_settings("./fouriscale/assets/layer_settings/sdxl.txt")
     base_settings = read_base_settings("./fouriscale/assets/base_settings/sdxl.txt")
 
@@ -111,13 +120,8 @@ def main():
     # load adapter
     pipeline.load_ip_adapter_instantid(face_adapter)
 
-
     # init compel for longer prompt
     compel = Compel(tokenizer=[pipeline.tokenizer, pipeline.tokenizer_2],text_encoder=[pipeline.text_encoder, pipeline.text_encoder_2],returned_embeddings_type=ReturnedEmbeddingsType.PENULTIMATE_HIDDEN_STATES_NON_NORMALIZED,requires_pooled=[False, True])
-
-    # load referring face image and referring pose image
-    face_img = load_image("/home/ruizhe.ou/ComfyUI/input/test1.jpeg")
-    pose_img = load_image("/home/ruizhe.ou/ComfyUI/input/test1.jpeg")
 
     # prepare face emb
     face_info = app.get(cv2.cvtColor(np.array(face_img), cv2.COLOR_RGB2BGR))
@@ -128,22 +132,20 @@ def main():
     pose_info = app.get(cv2.cvtColor(np.array(pose_img), cv2.COLOR_RGB2BGR))
     pose_info = sorted(pose_info, key=lambda x:(x['bbox'][2]-x['bbox'][0])*x['bbox'][3]-x['bbox'][1])[-1] # only use the maximum face
     face_kps = draw_kps(image_pil=pose_img, kps=pose_info['kps'])
-    # resize face key points image size to target size
-    face_kps = resize_and_pad(face_kps, size=(pixel_width, pixel_height))
+    # resize face key points image size to target size to gain a better result!
+    face_kps = resize_and_pad(face_kps, size=(target_width, target_height))
 
-    prompt = "isometric style,sensitive,1girl,solo,long_hair,red_hair,navel,cowboy_shot,midriff,pants,black_eyes,lips,crop_top,looking_to_the_side,torn_clothes,makeup,buttons,black_pants,jeans,realistic,torn_pants. vibrant, beautiful, crisp, detailed, ultra detailed, intricate"
-    prompt = "isometric style,general,sensitive,1girl,long_hair,looking_at_viewer,brown_hair,shirt,black_hair,brown_eyes,jewelry,jacket,earrings,solo_focus,necklace,blurry,black_eyes,lips,parted_bangs,depth_of_field,blurry_background,denim,jeans,realistic,denim_jacket.vibrant, beautiful, crisp, detailed, ultra detailed, intricate"
-    n_prompt = "deformed, mutated, ugly, disfigured, blur, blurry, noise, noisy, realistic, photographic"
+    # encode prompt and negative prompt
     p_prompt_embeds, p_prompt_pooled = compel(prompt)
-    n_prompt_embeds, n_prompt_pooled = compel(n_prompt)
+    n_prompt_embeds, n_prompt_pooled = compel(neg_prompt)
 
     pipeline.enable_vae_tiling()
 
     # FouriScale
-    base_size, aspect_ratio = find_smallest_padding_pair(pixel_height, pixel_width, base_settings)
+    base_size, aspect_ratio = find_smallest_padding_pair(target_height, target_width, base_settings)
     print(f"Using reference size {base_size}")
-    dilation = max(math.ceil(pixel_height / base_size[0]),
-                   math.ceil(pixel_width / base_size[1]))
+    dilation = max(math.ceil(target_height / base_size[0]),
+                   math.ceil(target_width / base_size[1]))
 
     start_time = time.time()
     image = pipeline(
@@ -153,24 +155,24 @@ def main():
         negative_pooled_prompt_embeds=n_prompt_pooled,
         image_embeds=face_emb,
         image=face_kps,
-        width=pixel_width,
-        height=pixel_height,
+        width=target_width,
+        height=target_height,
         original_size=base_size,
         target_size=base_size,
-        controlnet_conditioning_scale=0.8,
-        ip_adapter_scale=0.8,
-        num_inference_steps=30,
-        guidance_scale=5.5,
+        controlnet_conditioning_scale=controlnet_conditioning_scale,
+        ip_adapter_scale=ip_adapter_scale,
+        num_inference_steps=num_inference_steps,
+        guidance_scale=guidance_scale,
         dilation=dilation,
-        start_step=12,
-        stop_step=21,
+        start_step=start_step,
+        stop_step=stop_step,
         layer_settings=layer_settings,
         base_size=base_size,
         progressive=True,
     ).images[0]
     end_time = time.time()
     print(f"Time: {end_time - start_time}") 
-    image.save('result_fouriscal.jpg')
+    image.save(f'instantid_fouriscale_{target_width}_{target_height}.jpg')
 
 if __name__ == "__main__":
     main()

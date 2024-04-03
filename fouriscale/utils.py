@@ -1,7 +1,7 @@
 import math
 
 def read_layer_settings(path):
-    print(f"Reading layer settings")
+    print(f"Reading FouriScale layer settings")
     layer_settings = []
     with open(path, 'r') as f:
         raw_lines = f.readlines()
@@ -11,7 +11,7 @@ def read_layer_settings(path):
 
 
 def read_base_settings(path):
-    print(f"Reading base settings")
+    print(f"Reading FouriScale base settings")
     base_settings = dict()
     with open(path, 'r') as f:
         raw_lines = f.readlines()
